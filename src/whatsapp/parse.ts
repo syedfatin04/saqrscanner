@@ -1,3 +1,5 @@
+export type WhatsAppExportFormat = 'ios' | 'android'
+
 export type WhatsAppAttachment = {
   filename: string
 }
@@ -12,8 +14,79 @@ export type WhatsAppMessage = {
   rawLines: string[]
 }
 
-const messageStartRe =
+// iOS / newer export: [M/D/YY, H:MM:SS AM/PM] Sender: message
+const messageStartReBracket =
   /^\u200e?\[(\d{1,2})\/(\d{1,2})\/(\d{2}),\s*([^\]]+)\]\s*([^:]+):\s?(.*)$/
+
+// Android / older export: DD/MM/YYYY, H:MM am/pm - Sender: message
+const messageStartReDash =
+  /^(\d{1,2})\/(\d{1,2})\/(\d{4}),\s*([^-]+?)\s*-\s*(.*)$/
+
+type ParsedLine = {
+  mm: number
+  dd: number
+  yy2: number
+  timeRaw: string
+  sender: string
+  rest: string
+}
+
+function parseIosMessageStartLine(line: string): ParsedLine | null {
+  const bracket = messageStartReBracket.exec(line)
+  if (!bracket) return null
+  return {
+    mm: Number(bracket[1]),
+    dd: Number(bracket[2]),
+    yy2: Number(bracket[3]),
+    timeRaw: bracket[4].trim(),
+    sender: bracket[5].trim(),
+    rest: bracket[6] ?? '',
+  }
+}
+
+function parseAndroidMessageStartLine(line: string): ParsedLine | null {
+  const dash = messageStartReDash.exec(line)
+  if (!dash) return null
+
+  const dd = Number(dash[1])
+  const mm = Number(dash[2])
+  const yyyy = Number(dash[3])
+  const timeRaw = dash[4].trim()
+  const tail = dash[5]
+  const senderMatch = /^([^:]+):\s?(.*)$/.exec(tail)
+  if (senderMatch) {
+    return {
+      mm,
+      dd,
+      yy2: yyyy - 2000,
+      timeRaw,
+      sender: senderMatch[1].trim(),
+      rest: senderMatch[2] ?? '',
+    }
+  }
+
+  return { mm, dd, yy2: yyyy - 2000, timeRaw, sender: 'System', rest: tail }
+}
+
+function parseMessageStartLine(line: string, format: WhatsAppExportFormat): ParsedLine | null {
+  return format === 'ios' ? parseIosMessageStartLine(line) : parseAndroidMessageStartLine(line)
+}
+
+export function detectWhatsAppExportFormat(rawText: string): WhatsAppExportFormat | null {
+  const lines = rawText.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n')
+  let ios = 0
+  let android = 0
+
+  for (const line of lines) {
+    if (!line.trim()) continue
+    if (parseIosMessageStartLine(line)) ios++
+    else if (parseAndroidMessageStartLine(line)) android++
+    if (ios + android >= 20) break
+  }
+
+  if (ios === 0 && android === 0) return null
+  return ios >= android ? 'ios' : 'android'
+}
 
 function parseTimeTo24h(timeRaw: string): { h: number; m: number; s: number } | null {
   // WhatsApp exports sometimes use narrow no-break space before AM/PM
@@ -43,14 +116,18 @@ function parseDateToJsDate(mm: number, dd: number, yy2: number, timeRaw: string)
 
 function extractAttachments(text: string): { cleaned: string; attachments: WhatsAppAttachment[] } {
   const attachments: WhatsAppAttachment[] = []
-  const cleaned = text.replace(/<attached:\s*([^>]+)>/gi, (_, filename: string) => {
+  let cleaned = text.replace(/<attached:\s*([^>]+)>/gi, (_, filename: string) => {
+    attachments.push({ filename: filename.trim() })
+    return ''
+  })
+  cleaned = cleaned.replace(/([^\n(]+?)\s*\(file attached\)/gi, (_, filename: string) => {
     attachments.push({ filename: filename.trim() })
     return ''
   })
   return { cleaned: cleaned.replace(/\s+/g, ' ').trim(), attachments }
 }
 
-export function parseWhatsAppExport(rawText: string): WhatsAppMessage[] {
+export function parseWhatsAppExport(rawText: string, format: WhatsAppExportFormat): WhatsAppMessage[] {
   const lines = rawText.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n')
   const messages: WhatsAppMessage[] = []
 
@@ -86,16 +163,18 @@ export function parseWhatsAppExport(rawText: string): WhatsAppMessage[] {
   }
 
   for (const line of lines) {
-    const m = messageStartRe.exec(line)
-    if (m) {
+    const parsed = parseMessageStartLine(line, format)
+    if (parsed) {
       flush()
-      const mm = Number(m[1])
-      const dd = Number(m[2])
-      const yy2 = Number(m[3])
-      const timeRaw = m[4].trim()
-      const sender = m[5].trim()
-      const rest = m[6] ?? ''
-      cur = { mm, dd, yy2, timeRaw, sender, textParts: [rest], rawLines: [line] }
+      cur = {
+        mm: parsed.mm,
+        dd: parsed.dd,
+        yy2: parsed.yy2,
+        timeRaw: parsed.timeRaw,
+        sender: parsed.sender,
+        textParts: [parsed.rest],
+        rawLines: [line],
+      }
       continue
     }
 

@@ -1,5 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { parseWhatsAppExport, uniqueSortedSenders, type WhatsAppMessage } from './whatsapp/parse'
+import {
+  detectWhatsAppExportFormat,
+  parseWhatsAppExport,
+  uniqueSortedSenders,
+  type WhatsAppExportFormat,
+  type WhatsAppMessage,
+} from './whatsapp/parse'
 
 type FileMap = Map<string, File>
 
@@ -190,6 +196,7 @@ function AttachmentView(props: {
 export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [viewMode, setViewMode] = useState<ViewMode>('messages')
+  const [exportFormat, setExportFormat] = useState<WhatsAppExportFormat>('ios')
   const [chatFileName, setChatFileName] = useState<string>('')
   const [rawText, setRawText] = useState<string>('')
   const [messages, setMessages] = useState<WhatsAppMessage[]>([])
@@ -217,9 +224,9 @@ export default function App() {
       setMessages([])
       return
     }
-    const parsed = parseWhatsAppExport(rawText)
+    const parsed = parseWhatsAppExport(rawText, exportFormat)
     setMessages(parsed)
-  }, [rawText])
+  }, [rawText, exportFormat])
 
   useEffect(() => {
     // Keep empty sender as "All names" by default (more useful for browsing).
@@ -343,11 +350,27 @@ export default function App() {
                 {stats.withAtt.toLocaleString()} with attachments
               </>
             ) : (
-              <>Load your exported `_chat.txt` and pick the export folder for attachments.</>
+              <>Load your exported chat `.txt` and pick the export folder for attachments.</>
             )}
           </div>
         </div>
         <div className="topStats">
+          <div className="segmented" title="Choose the export format that matches your chat file">
+            <button
+              type="button"
+              className={`segBtn ${exportFormat === 'ios' ? 'active' : ''}`}
+              onClick={() => setExportFormat('ios')}
+            >
+              iOS
+            </button>
+            <button
+              type="button"
+              className={`segBtn ${exportFormat === 'android' ? 'active' : ''}`}
+              onClick={() => setExportFormat('android')}
+            >
+              Android
+            </button>
+          </div>
           <div className="segmented">
             <button
               type="button"
@@ -385,11 +408,23 @@ export default function App() {
                 if (!f) return
                 setChatFileName(f.name)
                 const text = await f.text()
+                const detected = detectWhatsAppExportFormat(text)
+                if (detected) setExportFormat(detected)
                 setRawText(text)
               }}
             />
             <div className="help">
-              Tip: select your exported `_chat.txt` (the big text file WhatsApp created).
+              {exportFormat === 'ios' ? (
+                <>
+                  iOS mode: use `_chat.txt` with lines like{' '}
+                  <code>[1/24/22, 6:28 PM] Name: message</code>
+                </>
+              ) : (
+                <>
+                  Android mode: use `WhatsApp Chat with ….txt` with lines like{' '}
+                  <code>24/01/2022, 6:28 pm - Name: message</code>
+                </>
+              )}
             </div>
           </div>
 
@@ -397,7 +432,15 @@ export default function App() {
             <div className="cardTitle">2) Pick export folder (attachments)</div>
             <DirectoryPicker onFiles={setFileMap} />
             <div className="help">
-              Select the folder that contains files like `00011941-PHOTO-....jpg` so images/PDFs show.
+              {exportFormat === 'ios' ? (
+                <>
+                  Select the folder with files like <code>00011941-PHOTO-….jpg</code> so images/PDFs show.
+                </>
+              ) : (
+                <>
+                  Select the folder with files like <code>IMG-20220124-WA0050.jpg</code> so images/PDFs show.
+                </>
+              )}
             </div>
           </div>
 
@@ -562,9 +605,23 @@ export default function App() {
         <main className="content">
           {!messages.length ? (
             <div className="empty">
-              <div className="emptyTitle">Load `_chat.txt` to start</div>
+              <div className="emptyTitle">
+                {rawText.trim()
+                  ? `No messages parsed in ${exportFormat === 'ios' ? 'iOS' : 'Android'} mode`
+                  : 'Load a chat `.txt` to start'}
+              </div>
               <div className="emptyBody">
-                After loading, choose a name on the left to view full details, including attached images/PDFs.
+                {rawText.trim() ? (
+                  <>
+                    The file may be from the other platform. Switch to{' '}
+                    <b>{exportFormat === 'ios' ? 'Android' : 'iOS'}</b> at the top and try again.
+                  </>
+                ) : (
+                  <>
+                    Pick <b>iOS</b> for `_chat.txt` or <b>Android</b> for `WhatsApp Chat with ….txt`, then load the
+                    file and choose the export folder for attachments.
+                  </>
+                )}
               </div>
             </div>
           ) : (
